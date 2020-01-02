@@ -24,7 +24,7 @@ public class MonteCarloPlayer extends Player {
 
     @Override
     public Move nextMove(Board board) {
-        long timeLimit = getTime() - 500;
+        long timeLimit = (long) (getTime() * 0.8);
         long startTime = System.currentTimeMillis();
 
         Node root = new Node();
@@ -42,6 +42,7 @@ public class MonteCarloPlayer extends Player {
         System.out.println("Best move index: " + bestMoveIndex);
         System.out.format("W/G/R: %.1f %d %f\n", bestNode.wins / 2.0, bestNode.games,
                 (double) bestNode.wins / (2 * bestNode.games));
+        System.out.println(System.currentTimeMillis() - startTime);
         return moves.get(bestMoveIndex);
     }
 
@@ -93,6 +94,7 @@ public class MonteCarloPlayer extends Player {
         }
         List<Move> moves = b.getMovesFor(player);
         Move nextMove = moves.get(random.nextInt(moves.size()));
+        moves = null;
 
         b.doMove(nextMove);
         Color result = simulate(b, getOpponent(player));
