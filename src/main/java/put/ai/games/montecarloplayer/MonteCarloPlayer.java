@@ -113,11 +113,12 @@ public class MonteCarloPlayer extends Player {
     public int getNextMove(Node node) {
         int nextMove = 0;
         double maxScore = 0;
+        double totalGamesLog = Math.log(node.games);
         for (int i = 0; i < node.children.length; ++i) {
             if (node.children[i].games == 0) {
                 return random.nextInt(node.children.length);
             }
-            double score = uctScore(node.children[i].wins, node.children[i].games, node.games);
+            double score = uctScore(node.children[i].wins, node.children[i].games, totalGamesLog);
             if (maxScore < score) {
                 maxScore = score;
                 nextMove = i;
@@ -126,9 +127,9 @@ public class MonteCarloPlayer extends Player {
         return nextMove;
     }
 
-    public double uctScore(int wins, int games, int totalGames) {
+    public double uctScore(int wins, int games, double totalGamesLog) {
         double C = 1.4;
-        return (double) wins / (2 * games) + C * Math.sqrt(Math.log(totalGames) / games);
+        return (double) wins / (2 * games) + C * Math.sqrt(totalGamesLog / games);
     }
 
     public int getBestMove(Node node) {
@@ -154,6 +155,7 @@ public class MonteCarloPlayer extends Player {
         long[][] player2;
         long[][] bitmasks;
         int[] rotation;
+        FastMove[][][] moves;
 
         public FastBoard(Board board) {
             if (board.getSize() != 6) {
@@ -169,6 +171,7 @@ public class MonteCarloPlayer extends Player {
             this.rotation = new int[4];
 
             computeBitmasks();
+            computeMoves();
             initializeBoard(board);
         }
 
@@ -205,6 +208,20 @@ public class MonteCarloPlayer extends Player {
                     }
                 }
                 board = rotateArray(board);
+            }
+        }
+
+        private void computeMoves() {
+            moves = new FastMove[4][smallBoardSize * smallBoardSize][8];
+            for (int board = 0; board < 4; ++board) {
+                for (int field = 0; field < smallBoardSize * smallBoardSize; ++field) {
+                    for (int rotation = 0; rotation < 4; ++rotation) {
+                        moves[board][field][2 * rotation] = new FastMove(board, field, rotation,
+                                RotateMove.Direction.CLOCKWISE);
+                        moves[board][field][2 * rotation + 1] = new FastMove(board, field, rotation,
+                                RotateMove.Direction.COUNTERCLOCKWISE);
+                    }
+                }
             }
         }
 
@@ -264,8 +281,8 @@ public class MonteCarloPlayer extends Player {
                 for (int j = 0; j < smallBoardSize * smallBoardSize; ++j) {
                     if (((player1[i][j / Long.SIZE] | player2[i][j / Long.SIZE]) & (1 << (j % Long.SIZE))) == 0) {
                         for (int rotation = 0; rotation < 4; ++rotation) {
-                            moves.add(new FastMove(i, j, rotation, RotateMove.Direction.CLOCKWISE));
-                            moves.add(new FastMove(i, j, rotation, RotateMove.Direction.COUNTERCLOCKWISE));
+                            moves.add(this.moves[i][j][2 * rotation]);
+                            moves.add(this.moves[i][j][2 * rotation + 1]);
                         }
                     }
                 }
