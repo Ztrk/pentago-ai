@@ -43,5 +43,10 @@
       <artifactId>BoardGame</artifactId>
       <version>2.0-SNAPSHOT</version>
     </dependency>
+    <dependency>
+      <groupId>put.ai.games</groupId>
+      <artifactId>Pentago</artifactId>
+      <version>2.0-SNAPSHOT</version>
+    </dependency>
   </dependencies>
 </project>

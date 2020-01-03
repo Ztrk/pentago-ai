@@ -3,7 +3,10 @@ package put.ai.games.montecarloplayer;
 import put.ai.games.game.Board;
 import put.ai.games.game.Move;
 import put.ai.games.game.Player;
+import put.ai.games.game.moves.RotateMove;
+import put.ai.games.pentago.impl.PentagoMove;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
@@ -23,30 +26,34 @@ public class MonteCarloPlayer extends Player {
     }
 
     @Override
-    public Move nextMove(Board board) {
-        long timeLimit = (long) (getTime() * 0.8);
+    public Move nextMove(Board originalBoard) {
         long startTime = System.currentTimeMillis();
+        long timeLimit = (long) (getTime() * 0.8);
 
+        FastBoard board = new FastBoard(originalBoard);
         Node root = new Node();
-        List<Move> moves = board.getMovesFor(getColor());
+        List<FastMove> moves = board.getMoves();
 
         int simulationNum = 0;
         while (System.currentTimeMillis() - startTime < timeLimit) {
             select(root, board, getColor());
             ++simulationNum;
         }
-        System.out.println(simulationNum);
 
         int bestMoveIndex = getBestMove(root);
+        FastMove bestMove = moves.get(bestMoveIndex);
+
         Node bestNode = root.children[bestMoveIndex];
+        System.out.println("Rollouts: " + simulationNum);
         System.out.println("Best move index: " + bestMoveIndex);
         System.out.format("W/G/R: %.1f %d %f\n", bestNode.wins / 2.0, bestNode.games,
                 (double) bestNode.wins / (2 * bestNode.games));
-        System.out.println(System.currentTimeMillis() - startTime);
-        return moves.get(bestMoveIndex);
+        System.out.println("Elapsed time: " + (System.currentTimeMillis() - startTime));
+
+        return bestMove.toMove(getColor(), board.getSize());
     }
 
-    public Color select(Node node, Board board, Color player) {
+    public Color select(Node node, FastBoard board, Color player) {
         Color winner = board.getWinner(player);
         if (winner != null) {
             ++node.games;
@@ -62,14 +69,14 @@ public class MonteCarloPlayer extends Player {
         Color result;
         if (node.children != null) {
             int nextMoveIndex = getNextMove(node);
-            Move move = board.getMovesFor(player).get(nextMoveIndex);
+            FastMove move = board.getMoves().get(nextMoveIndex);
 
-            board.doMove(move);
+            board.doMove(move, player);
             result = select(node.children[nextMoveIndex], board, getOpponent(player));
-            board.undoMove(move);
+            board.undoMove(move, player);
         }
         else {
-            node.children = new Node[board.getMovesFor(player).size()];
+            node.children = new Node[board.getMoves().size()];
             for (int i = 0; i < node.children.length; ++i) {
                 node.children[i] = new Node();
             }
@@ -87,18 +94,18 @@ public class MonteCarloPlayer extends Player {
         return result;
     }
 
-    public Color simulate(Board b, Color player) {
-        Color winner = b.getWinner(player);
+    public Color simulate(FastBoard board, Color player) {
+        Color winner = board.getWinner(player);
         if (winner != null) {
             return winner;
         }
-        List<Move> moves = b.getMovesFor(player);
-        Move nextMove = moves.get(random.nextInt(moves.size()));
+        List<FastMove> moves = board.getMoves();
+        FastMove nextMove = moves.get(random.nextInt(moves.size()));
         moves = null;
 
-        b.doMove(nextMove);
-        Color result = simulate(b, getOpponent(player));
-        b.undoMove(nextMove);
+        board.doMove(nextMove, player);
+        Color result = simulate(board, getOpponent(player));
+        board.undoMove(nextMove, player);
 
         return result;
     }
@@ -137,5 +144,277 @@ public class MonteCarloPlayer extends Player {
             }
         }
         return bestMove;
+    }
+
+    private static class FastBoard {
+        int boardSize;
+        int smallBoardSize;
+        int stateLength; // in size of long
+        long[][] player1;
+        long[][] player2;
+        long[][] bitmasks;
+        int[] rotation;
+
+        public FastBoard(Board board) {
+            if (board.getSize() != 6) {
+                throw new IllegalArgumentException("Only 6x6 board supported");
+            }
+            this.boardSize = board.getSize();
+            this.smallBoardSize = board.getSize() / 2;
+            int stateLengthBits = 4 * smallBoardSize * smallBoardSize;
+            this.stateLength = (stateLengthBits - 1) / Long.SIZE + 1;
+
+            this.player1 = new long[4][stateLength];
+            this.player2 = new long[4][stateLength];
+            this.rotation = new int[4];
+
+            computeBitmasks();
+            initializeBoard(board);
+        }
+
+        private void initializeBoard(Board board) {
+            for (int i = 0; i < boardSize; ++i) {
+                for (int j = 0; j < boardSize; ++j) {
+                    if (board.getState(j, i) == Color.PLAYER1) {
+                        setBoardState(player1, 2 * (i / smallBoardSize) + j / smallBoardSize,
+                                smallBoardSize * (i % smallBoardSize) + j % smallBoardSize);
+                    }
+                    else if (board.getState(j, i) == Color.PLAYER2) {
+                        setBoardState(player2, 2 * (i / smallBoardSize) + j / smallBoardSize,
+                                smallBoardSize * (i % smallBoardSize) + j % smallBoardSize);
+                    }
+                }
+            }
+        }
+
+        private void computeBitmasks() {
+            int smallBoardSize = boardSize / 2;
+            bitmasks = new long[smallBoardSize * smallBoardSize][stateLength];
+
+            int[][] board = new int[smallBoardSize][smallBoardSize];
+            for (int i = 0; i < smallBoardSize; ++i) {
+                for (int j = 0; j < smallBoardSize; ++j) {
+                    board[i][j] = i * smallBoardSize + j;
+                }
+            }
+            for (int rotation = 0; rotation < 4; ++rotation) {
+                for (int i = 0; i < board.length; ++i) {
+                    for (int j = 0; j < board.length; ++j) {
+                        int bitIndex = rotation * smallBoardSize * smallBoardSize + i * smallBoardSize + j;
+                        bitmasks[board[i][j]][bitIndex / Long.SIZE] |= 1L << (bitIndex % Long.SIZE);
+                    }
+                }
+                board = rotateArray(board);
+            }
+        }
+
+        private int[][] rotateArray(int[][] array) {
+            int[][] rotated = new int[array.length][array.length];
+            for (int i = 0; i < array.length; ++i) {
+                for (int j = 0; j < array[i].length; ++j) {
+                    rotated[j][array.length - i - 1] = array[i][j];
+                }
+            }
+            return rotated;
+        }
+
+        public void doMove(FastMove move, Color player) {
+            if (player == Color.PLAYER1) {
+                setBoardState(player1, move.getBoard(), move.getField());
+            }
+            else if (player == Color.PLAYER2) {
+                setBoardState(player2, move.getBoard(), move.getField());
+            }
+            if (move.direction == RotateMove.Direction.CLOCKWISE) {
+                rotation[move.getRotatedBoard()] = (rotation[move.getRotatedBoard()] + 1) % 4;
+            }
+            else {
+                rotation[move.getRotatedBoard()] = (rotation[move.getRotatedBoard()] + 3) % 4;
+            }
+        }
+
+        private void setBoardState(long[][] state, int board, int field) {
+            for (int i = 0; i < stateLength; ++i) {
+                state[board][i] |= bitmasks[field][i];
+            }
+        }
+
+        public void undoMove(FastMove move, Color player) {
+            if (player == Color.PLAYER1) {
+                for (int i = 0; i < stateLength; ++i) {
+                    player1[move.getBoard()][i] &= ~bitmasks[move.getField()][i];
+                }
+            }
+            else if (player == Color.PLAYER2) {
+                for (int i = 0; i < stateLength; ++i) {
+                    player2[move.getBoard()][i] &= ~bitmasks[move.getField()][i];
+                }
+            }
+            if (move.getDirection() == RotateMove.Direction.CLOCKWISE) {
+                rotation[move.getRotatedBoard()] = (rotation[move.getRotatedBoard()] + 3) % 4;
+            }
+            else {
+                rotation[move.getRotatedBoard()] = (rotation[move.getRotatedBoard()] + 1) % 4;
+            }
+        }
+
+        public List<FastMove> getMoves() {
+            List<FastMove> moves = new ArrayList<>();
+            for (int i = 0; i < 4; ++i) {
+                for (int j = 0; j < smallBoardSize * smallBoardSize; ++j) {
+                    if (((player1[i][j / Long.SIZE] | player2[i][j / Long.SIZE]) & (1 << (j % Long.SIZE))) == 0) {
+                        for (int rotation = 0; rotation < 4; ++rotation) {
+                            moves.add(new FastMove(i, j, rotation, RotateMove.Direction.CLOCKWISE));
+                            moves.add(new FastMove(i, j, rotation, RotateMove.Direction.COUNTERCLOCKWISE));
+                        }
+                    }
+                }
+            }
+            return moves;
+        }
+
+        public int getSize() {
+            return boardSize;
+        }
+
+        private boolean hasFive(long board1, long board2) {
+            // Only works for board size = 6
+            long winBitmask = 0xDB;
+            long orBitmask = 0x49;
+            long result = board1 & (board1 >>> 1) & ((board1 >>> 2) | (orBitmask << 1))
+                    & ((board2 << 1) | orBitmask) & board2 & (board2 >>> 1);
+            return (result & winBitmask) != 0;
+        }
+
+        public boolean isWinner(long[][] state) {
+            int length = smallBoardSize * smallBoardSize;
+            if (hasFive(state[0][0] >>> (rotation[0] * length), state[1][0] >>> (rotation[1] * length))) {
+                return true;
+            }
+            if (hasFive(state[2][0] >>> (rotation[2] * length), state[3][0] >>> (rotation[3] * length))) {
+                return true;
+            }
+            if (hasFive(state[0][0] >>> ((rotation[0] + 3) % 4 * length),
+                    state[2][0] >>> ((rotation[2] + 3) % 4 * length))) {
+                return true;
+            }
+            return hasFive(state[1][0] >>> ((rotation[1] + 3) % 4 * length),
+                    state[3][0] >>> ((rotation[3] + 3) % 4 * length));
+        }
+
+        public boolean isDraw() {
+            long bitmask = 0x1FF; // for board size = 6
+            for (int i = 0; i < 4; ++i) {
+                if ((~(player1[i][0] | player2[i][0]) & bitmask) != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public Color getWinner(Color nextPlayer) {
+            boolean isPlayer1 = isWinner(player1);
+            boolean isPlayer2 = isWinner(player2);
+            if (isPlayer1 && isPlayer2) {
+                return nextPlayer;
+            }
+            if (isPlayer1) {
+                return Color.PLAYER1;
+            }
+            if (isPlayer2) {
+                return Color.PLAYER2;
+            }
+            if (isDraw()) {
+                return Color.EMPTY;
+            }
+            return null;
+        }
+
+        @Override
+        public String toString() {
+            // Assumes 6x6 board
+            long[] player1State = new long[4];
+            long[] player2State = new long[4];
+            for (int i = 0; i < 4; ++i) {
+                player1State[i] = player1[i][0] >> (rotation[i] * smallBoardSize * smallBoardSize);
+                player2State[i] = player2[i][0] >> (rotation[i] * smallBoardSize * smallBoardSize);
+            }
+            StringBuilder board = new StringBuilder();
+            for (int i = 0; i < boardSize; ++i) {
+                for (int j = 0; j < boardSize; ++j) {
+                    int boardIndex = 2 * (i / smallBoardSize) + j / smallBoardSize;
+                    int field = smallBoardSize * (i % smallBoardSize) + j % smallBoardSize;
+                    if ((player1State[boardIndex] & (1L << field)) != 0) {
+                        board.append('1');
+                    }
+                    else if ((player2State[boardIndex] & (1L << field)) != 0) {
+                        board.append('2');
+                    }
+                    else {
+                        board.append('-');
+                    }
+                }
+                board.append('\n');
+            }
+            return board.toString();
+        }
+    }
+
+    private static class FastMove {
+        private int board;
+        private int field;
+        private int rotatedBoard;
+        private RotateMove.Direction direction;
+
+        public FastMove(int board, int field, int rotatedBoard, RotateMove.Direction direction) {
+            this.board = board;
+            this.field = field;
+            this.rotatedBoard = rotatedBoard;
+            this.direction = direction;
+        }
+
+        public RotateMove.Direction getDirection() {
+            return direction;
+        }
+
+        public int getBoard() {
+            return board;
+        }
+
+        public int getField() {
+            return field;
+        }
+
+        public int getRotatedBoard() {
+            return rotatedBoard;
+        }
+
+        public PentagoMove toMove(Color player, int boardSize) {
+            int smallBoardSize = boardSize / 2;
+            int upperLeftRow = smallBoardSize * (board / 2);
+            int upperLeftColumn = smallBoardSize * (board % 2);
+
+            int rotationRow = smallBoardSize * (rotatedBoard / 2);
+            int rotationSourceColumn = smallBoardSize * (rotatedBoard % 2);
+            int rotationDestinationColumn = rotationSourceColumn + smallBoardSize - 1;
+            if (direction == RotateMove.Direction.COUNTERCLOCKWISE) {
+                int tmp = rotationSourceColumn;
+                rotationSourceColumn = rotationDestinationColumn;
+                rotationDestinationColumn = tmp;
+            }
+
+            return new PentagoMove(upperLeftColumn + field % smallBoardSize,upperLeftRow + field / smallBoardSize,
+                    rotationSourceColumn, rotationRow, rotationDestinationColumn, rotationRow, player);
+        }
+
+        @Override
+        public String toString() {
+            return "FastMove{" +
+                    "board=" + board +
+                    ", field=" + field +
+                    ", rotatedBoard=" + rotatedBoard +
+                    ", direction=" + direction +
+                    '}';
+        }
     }
 }
