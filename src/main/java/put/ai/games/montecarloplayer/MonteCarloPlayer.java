@@ -67,21 +67,32 @@ public class MonteCarloPlayer extends Player {
         }
 
         Color result;
-        if (node.children != null) {
-            int nextMoveIndex = getNextMove(node);
-            FastMove move = board.getMoves().get(nextMoveIndex);
+        List<FastMove> moves = board.getMoves();
+        if (node.children == null) {
+            node.children = new Node[moves.size()];
+        }
 
-            board.doMove(move, player);
-            result = select(node.children[nextMoveIndex], board, getOpponent(player));
-            board.undoMove(move, player);
+        int nextMoveIndex = getNextMove(node);
+        FastMove move = board.getMoves().get(nextMoveIndex);
+
+        moves = null;
+
+        board.doMove(move, player);
+        if (node.children[nextMoveIndex] == null) {
+            node.children[nextMoveIndex] = new Node();
+            result = simulate(board, player);
+            ++node.children[nextMoveIndex].games;
+            if (result == player) {
+                node.children[nextMoveIndex].wins += 2;
+            }
+            else if (result == Color.EMPTY) {
+                ++node.children[nextMoveIndex].wins;
+            }
         }
         else {
-            node.children = new Node[board.getMoves().size()];
-            for (int i = 0; i < node.children.length; ++i) {
-                node.children[i] = new Node();
-            }
-            result = simulate(board, player);
+            result = select(node.children[nextMoveIndex], board, getOpponent(player));
         }
+        board.undoMove(move, player);
 
         ++node.games;
         if (result == getOpponent(player)) {
@@ -115,7 +126,7 @@ public class MonteCarloPlayer extends Player {
         double maxScore = 0;
         double totalGamesLog = Math.log(node.games);
         for (int i = 0; i < node.children.length; ++i) {
-            if (node.children[i].games == 0) {
+            if (node.children[i] == null) {
                 return random.nextInt(node.children.length);
             }
             double score = uctScore(node.children[i].wins, node.children[i].games, totalGamesLog);
@@ -136,7 +147,7 @@ public class MonteCarloPlayer extends Player {
         int bestMove = 0;
         double maxWinRatio = 0;
         for (int i = 0; i < node.children.length; ++i) {
-            if (node.children[i].games != 0) {
+            if (node.children[i] != null) {
                 double winRatio = (double) node.children[i].wins / node.children[i].games;
                 if (maxWinRatio < winRatio) {
                     maxWinRatio = winRatio;
