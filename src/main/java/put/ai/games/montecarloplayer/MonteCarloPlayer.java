@@ -6,13 +6,13 @@ import put.ai.games.game.Player;
 import put.ai.games.game.moves.RotateMove;
 import put.ai.games.pentago.impl.PentagoMove;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 
 public class MonteCarloPlayer extends Player {
 
-    private Random random = new Random(0xdeadbeef);
+    private Random random = new Random();
+    private List<HashMap<FastBoard.State, Node>> transpositionTables;
+    private int newNodes;
 
     @Override
     public String getName() {
@@ -25,35 +25,62 @@ public class MonteCarloPlayer extends Player {
         public Node[] children;
     }
 
+    public MonteCarloPlayer() {
+        transpositionTables = new ArrayList<>(37);
+        for (int i = 0; i < 37; ++i) {
+            transpositionTables.add(new HashMap<>());
+        }
+    }
+
+    public Node createNode(FastBoard.State boardState, int depth) {
+        HashMap<FastBoard.State, Node> transpositionTable = transpositionTables.get(depth);
+        if (transpositionTable.containsKey(boardState)) {
+            return transpositionTable.get(boardState);
+        }
+        else {
+            ++newNodes;
+            Node node = new Node();
+            transpositionTable.put(boardState, node);
+            return node;
+        }
+    }
+
     @Override
     public Move nextMove(Board originalBoard) {
         long startTime = System.currentTimeMillis();
         long timeLimit = (long) (getTime() * 0.95);
 
         FastBoard board = new FastBoard(originalBoard);
-        Node root = new Node();
+
+        Node root = createNode(board.getState(), 0);
         List<FastMove> moves = board.getMoves();
 
         int simulationNum = 0;
         while (System.currentTimeMillis() - startTime < timeLimit) {
-            select(root, board, getColor());
+            select(root, board, getColor(), 0);
             ++simulationNum;
         }
+
+        transpositionTables.remove(0);
+        transpositionTables.remove(0);
 
         int bestMoveIndex = getBestMove(root);
         FastMove bestMove = moves.get(bestMoveIndex);
 
         Node bestNode = root.children[bestMoveIndex];
+
         System.out.println("Rollouts: " + simulationNum);
         System.out.println("Best move index: " + bestMoveIndex);
         System.out.format("W/G/R: %.1f %d %f\n", bestNode.wins / 2.0, bestNode.games,
                 (double) bestNode.wins / (2 * bestNode.games));
         System.out.println("Elapsed time: " + (System.currentTimeMillis() - startTime));
+        System.out.println("Nodes created: " + newNodes);
+
 
         return bestMove.toMove(getColor(), board.getSize());
     }
 
-    public Color select(Node node, FastBoard board, Color player) {
+    public Color select(Node node, FastBoard board, Color player, int depth) {
         Color winner = board.getWinner(player);
         if (winner != null) {
             ++node.games;
@@ -79,7 +106,9 @@ public class MonteCarloPlayer extends Player {
 
         board.doMove(move, player);
         if (node.children[nextMoveIndex] == null) {
-            node.children[nextMoveIndex] = new Node();
+            FastBoard.State boardState = board.getState();
+            node.children[nextMoveIndex] = createNode(boardState, depth + 1);
+
             result = simulate(board, player);
             ++node.children[nextMoveIndex].games;
             if (result == player) {
@@ -90,7 +119,7 @@ public class MonteCarloPlayer extends Player {
             }
         }
         else {
-            result = select(node.children[nextMoveIndex], board, getOpponent(player));
+            result = select(node.children[nextMoveIndex], board, getOpponent(player), depth + 1);
         }
         board.undoMove(move, player);
 
@@ -139,7 +168,7 @@ public class MonteCarloPlayer extends Player {
     }
 
     public double uctScore(int wins, int games, double totalGamesLog) {
-        double C = 1.4;
+        double C = 0.5;
         return (double) wins / (2 * games) + C * Math.sqrt(totalGamesLog / games);
     }
 
@@ -184,13 +213,13 @@ public class MonteCarloPlayer extends Player {
         private void initializeBoard(Board board) {
             for (int i = 0; i < boardSize; ++i) {
                 for (int j = 0; j < boardSize; ++j) {
+                    int boardIndex = 2 * (i / smallBoardSize) + j / smallBoardSize;
+                    int fieldIndex = smallBoardSize * (i % smallBoardSize) + j % smallBoardSize;
                     if (board.getState(j, i) == Color.PLAYER1) {
-                        setBoardState(player1, 2 * (i / smallBoardSize) + j / smallBoardSize,
-                                smallBoardSize * (i % smallBoardSize) + j % smallBoardSize);
+                        setBoardState(player1, boardIndex, fieldIndex);
                     }
                     else if (board.getState(j, i) == Color.PLAYER2) {
-                        setBoardState(player2, 2 * (i / smallBoardSize) + j / smallBoardSize,
-                                smallBoardSize * (i % smallBoardSize) + j % smallBoardSize);
+                        setBoardState(player2, boardIndex, fieldIndex);
                     }
                 }
             }
@@ -348,30 +377,62 @@ public class MonteCarloPlayer extends Player {
 
         @Override
         public String toString() {
-            long[] player1State = new long[4];
-            long[] player2State = new long[4];
-            for (int i = 0; i < 4; ++i) {
-                player1State[i] = player1[i] >> (rotation[i] * smallBoardSize * smallBoardSize);
-                player2State[i] = player2[i] >> (rotation[i] * smallBoardSize * smallBoardSize);
-            }
-            StringBuilder board = new StringBuilder();
-            for (int i = 0; i < boardSize; ++i) {
-                for (int j = 0; j < boardSize; ++j) {
-                    int boardIndex = 2 * (i / smallBoardSize) + j / smallBoardSize;
-                    int field = smallBoardSize * (i % smallBoardSize) + j % smallBoardSize;
-                    if ((player1State[boardIndex] & (1L << field)) != 0) {
-                        board.append('1');
-                    }
-                    else if ((player2State[boardIndex] & (1L << field)) != 0) {
-                        board.append('2');
-                    }
-                    else {
-                        board.append('-');
-                    }
+            return getState().toString();
+        }
+
+        public State getState() {
+            return new State(this);
+        }
+
+        public class State {
+            private long[] state = new long[2];
+
+            State(FastBoard board) {
+                long bitmask = 0x1FF;
+                for (int i = 0; i < 4; ++i) {
+                    state[0] |= ((board.player1[i] >>> (board.rotation[i] * smallBoardSize * smallBoardSize)) & bitmask)
+                            << (i * smallBoardSize * smallBoardSize);
+                    state[1] |= ((board.player2[i] >>> (board.rotation[i] * smallBoardSize * smallBoardSize)) & bitmask)
+                            << (i * smallBoardSize * smallBoardSize);
                 }
-                board.append('\n');
             }
-            return board.toString();
+
+            @Override
+            public int hashCode() {
+                return Arrays.hashCode(state);
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (o.getClass() != State.class) {
+                    return false;
+                }
+                return Arrays.equals(state, ((State) o).state);
+            }
+
+            @Override
+            public String toString() {
+                StringBuilder board = new StringBuilder();
+                for (int i = 0; i < boardSize; ++i) {
+                    for (int j = 0; j < boardSize; ++j) {
+                        int boardIndex = 2 * (i / smallBoardSize) + j / smallBoardSize;
+                        int field = smallBoardSize * (i % smallBoardSize) + j % smallBoardSize;
+                        int shift = smallBoardSize * smallBoardSize * boardIndex + field;
+                        if ((state[0] & (1L << shift)) != 0) {
+                            board.append('1');
+                        }
+                        else if ((state[1] & (1L << shift)) != 0) {
+                            board.append('2');
+                        }
+                        else {
+                            board.append('-');
+                        }
+                    }
+                    board.append('\n');
+                }
+                return board.toString();
+            }
+
         }
     }
 
