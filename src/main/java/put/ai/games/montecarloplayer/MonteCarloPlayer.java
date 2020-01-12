@@ -28,7 +28,7 @@ public class MonteCarloPlayer extends Player {
     @Override
     public Move nextMove(Board originalBoard) {
         long startTime = System.currentTimeMillis();
-        long timeLimit = (long) (getTime() * 0.8);
+        long timeLimit = (long) (getTime() * 0.95);
 
         FastBoard board = new FastBoard(originalBoard);
         Node root = new Node();
@@ -73,7 +73,7 @@ public class MonteCarloPlayer extends Player {
         }
 
         int nextMoveIndex = getNextMove(node);
-        FastMove move = board.getMoves().get(nextMoveIndex);
+        FastMove move = moves.get(nextMoveIndex);
 
         moves = null;
 
@@ -159,12 +159,11 @@ public class MonteCarloPlayer extends Player {
     }
 
     private static class FastBoard {
-        int boardSize;
-        int smallBoardSize;
-        int stateLength; // in size of long
-        long[][] player1;
-        long[][] player2;
-        long[][] bitmasks;
+        final int boardSize = 6;
+        final int smallBoardSize = 3;
+        long[] player1;
+        long[] player2;
+        long[] bitmasks;
         int[] rotation;
         FastMove[][][] moves;
 
@@ -172,13 +171,9 @@ public class MonteCarloPlayer extends Player {
             if (board.getSize() != 6) {
                 throw new IllegalArgumentException("Only 6x6 board supported");
             }
-            this.boardSize = board.getSize();
-            this.smallBoardSize = board.getSize() / 2;
-            int stateLengthBits = 4 * smallBoardSize * smallBoardSize;
-            this.stateLength = (stateLengthBits - 1) / Long.SIZE + 1;
 
-            this.player1 = new long[4][stateLength];
-            this.player2 = new long[4][stateLength];
+            this.player1 = new long[4];
+            this.player2 = new long[4];
             this.rotation = new int[4];
 
             computeBitmasks();
@@ -203,7 +198,7 @@ public class MonteCarloPlayer extends Player {
 
         private void computeBitmasks() {
             int smallBoardSize = boardSize / 2;
-            bitmasks = new long[smallBoardSize * smallBoardSize][stateLength];
+            bitmasks = new long[smallBoardSize * smallBoardSize];
 
             int[][] board = new int[smallBoardSize][smallBoardSize];
             for (int i = 0; i < smallBoardSize; ++i) {
@@ -215,7 +210,7 @@ public class MonteCarloPlayer extends Player {
                 for (int i = 0; i < board.length; ++i) {
                     for (int j = 0; j < board.length; ++j) {
                         int bitIndex = rotation * smallBoardSize * smallBoardSize + i * smallBoardSize + j;
-                        bitmasks[board[i][j]][bitIndex / Long.SIZE] |= 1L << (bitIndex % Long.SIZE);
+                        bitmasks[board[i][j]] |= 1L << bitIndex;
                     }
                 }
                 board = rotateArray(board);
@@ -261,22 +256,16 @@ public class MonteCarloPlayer extends Player {
             }
         }
 
-        private void setBoardState(long[][] state, int board, int field) {
-            for (int i = 0; i < stateLength; ++i) {
-                state[board][i] |= bitmasks[field][i];
-            }
+        private void setBoardState(long[] state, int board, int field) {
+            state[board] |= bitmasks[field];
         }
 
         public void undoMove(FastMove move, Color player) {
             if (player == Color.PLAYER1) {
-                for (int i = 0; i < stateLength; ++i) {
-                    player1[move.getBoard()][i] &= ~bitmasks[move.getField()][i];
-                }
+                player1[move.getBoard()] &= ~bitmasks[move.getField()];
             }
             else if (player == Color.PLAYER2) {
-                for (int i = 0; i < stateLength; ++i) {
-                    player2[move.getBoard()][i] &= ~bitmasks[move.getField()][i];
-                }
+                player2[move.getBoard()] &= ~bitmasks[move.getField()];
             }
             if (move.getDirection() == RotateMove.Direction.CLOCKWISE) {
                 rotation[move.getRotatedBoard()] = (rotation[move.getRotatedBoard()] + 3) % 4;
@@ -290,7 +279,7 @@ public class MonteCarloPlayer extends Player {
             List<FastMove> moves = new ArrayList<>();
             for (int i = 0; i < 4; ++i) {
                 for (int j = 0; j < smallBoardSize * smallBoardSize; ++j) {
-                    if (((player1[i][j / Long.SIZE] | player2[i][j / Long.SIZE]) & (1 << (j % Long.SIZE))) == 0) {
+                    if (((player1[i] | player2[i]) & (1L << j)) == 0) {
                         for (int rotation = 0; rotation < 4; ++rotation) {
                             moves.add(this.moves[i][j][2 * rotation]);
                             moves.add(this.moves[i][j][2 * rotation + 1]);
@@ -306,7 +295,6 @@ public class MonteCarloPlayer extends Player {
         }
 
         private boolean hasFive(long board1, long board2) {
-            // Only works for board size = 6
             long winBitmask = 0xDB;
             long orBitmask = 0x49;
             long result = board1 & (board1 >>> 1) & ((board1 >>> 2) | (orBitmask << 1))
@@ -314,26 +302,26 @@ public class MonteCarloPlayer extends Player {
             return (result & winBitmask) != 0;
         }
 
-        public boolean isWinner(long[][] state) {
+        public boolean isWinner(long[] state) {
             int length = smallBoardSize * smallBoardSize;
-            if (hasFive(state[0][0] >>> (rotation[0] * length), state[1][0] >>> (rotation[1] * length))) {
+            if (hasFive(state[0] >>> (rotation[0] * length), state[1] >>> (rotation[1] * length))) {
                 return true;
             }
-            if (hasFive(state[2][0] >>> (rotation[2] * length), state[3][0] >>> (rotation[3] * length))) {
+            if (hasFive(state[2] >>> (rotation[2] * length), state[3] >>> (rotation[3] * length))) {
                 return true;
             }
-            if (hasFive(state[0][0] >>> ((rotation[0] + 3) % 4 * length),
-                    state[2][0] >>> ((rotation[2] + 3) % 4 * length))) {
+            if (hasFive(state[0] >>> ((rotation[0] + 3) % 4 * length),
+                    state[2] >>> ((rotation[2] + 3) % 4 * length))) {
                 return true;
             }
-            return hasFive(state[1][0] >>> ((rotation[1] + 3) % 4 * length),
-                    state[3][0] >>> ((rotation[3] + 3) % 4 * length));
+            return hasFive(state[1] >>> ((rotation[1] + 3) % 4 * length),
+                    state[3] >>> ((rotation[3] + 3) % 4 * length));
         }
 
         public boolean isDraw() {
-            long bitmask = 0x1FF; // for board size = 6
+            long bitmask = 0x1FF;
             for (int i = 0; i < 4; ++i) {
-                if ((~(player1[i][0] | player2[i][0]) & bitmask) != 0) {
+                if ((~(player1[i] | player2[i]) & bitmask) != 0) {
                     return false;
                 }
             }
@@ -360,12 +348,11 @@ public class MonteCarloPlayer extends Player {
 
         @Override
         public String toString() {
-            // Assumes 6x6 board
             long[] player1State = new long[4];
             long[] player2State = new long[4];
             for (int i = 0; i < 4; ++i) {
-                player1State[i] = player1[i][0] >> (rotation[i] * smallBoardSize * smallBoardSize);
-                player2State[i] = player2[i][0] >> (rotation[i] * smallBoardSize * smallBoardSize);
+                player1State[i] = player1[i] >> (rotation[i] * smallBoardSize * smallBoardSize);
+                player2State[i] = player2[i] >> (rotation[i] * smallBoardSize * smallBoardSize);
             }
             StringBuilder board = new StringBuilder();
             for (int i = 0; i < boardSize; ++i) {
